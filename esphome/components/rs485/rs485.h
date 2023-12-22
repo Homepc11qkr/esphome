@@ -6,6 +6,7 @@
 #include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 #include "esphome/core/hal.h"
+#include "esphome/core/string_ref.h"
 
 #define BUFFER_SIZE 128
 #define RX_ENABLE false
@@ -110,7 +111,7 @@ class RS485Device : public RS485Listener, public PollingComponent {
 
 
     protected:
-        const std::string *device_name_;
+        const StringRef *device_name_;
         hex_t device_{};
         optional<hex_t> sub_device_{};
         optional<hex_t> state_on_{};
