@@ -2,6 +2,7 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import light, rs485
 from esphome.const import (
+    CONF_ID,
     CONF_OUTPUT_ID,
     CONF_UPDATE_INTERVAL,
 )
@@ -23,7 +24,7 @@ CONFIG_SCHEMA = (
 
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_OUTPUT_ID])
-    light_var = cg.new_Pvariable(var)
+    light_var = cg.new_Pvariable(config[CONF_ID], var)
     cg.add(var.set_light(light_var))
 
     cg.add(cg.App.register_light(light_var))
