@@ -2,12 +2,12 @@
 
 #include "esphome/core/component.h"
 
-#include "esphome/core/automation.h"
 #include "esphome/components/modbus/modbus.h"
+#include "esphome/core/automation.h"
 
 #include <list>
-#include <set>
 #include <queue>
+#include <set>
 #include <vector>
 
 namespace esphome {
@@ -185,8 +185,8 @@ inline bool coil_from_vector(int coil, const std::vector<uint8_t> &data) {
 
 /** Extract bits from value and shift right according to the bitmask
  * if the bitmask is 0x00F0  we want the values frrom bit 5 - 8.
- * the result is then shifted right by the postion if the first right set bit in the mask
- * Usefull for modbus data where more than one value is packed in a 16 bit register
+ * the result is then shifted right by the position if the first right set bit in the mask
+ * Useful for modbus data where more than one value is packed in a 16 bit register
  * Example: on Epever the "Length of night" register 0x9065 encodes values of the whole night length of time as
  * D15 - D8 =  hour, D7 - D0 = minute
  * To get the hours use mask 0xFF00 and  0x00FF for the minute
@@ -246,7 +246,7 @@ class SensorItem {
   uint8_t offset;
   uint8_t register_count;
   uint8_t response_bytes{0};
-  uint8_t skip_updates;
+  uint16_t skip_updates;
   std::vector<uint8_t> custom_data{};
   bool force_new_range{false};
 };
@@ -288,9 +288,9 @@ struct RegisterRange {
   uint16_t start_address;
   ModbusRegisterType register_type;
   uint8_t register_count;
-  uint8_t skip_updates;          // the config value
-  SensorSet sensors;             // all sensors of this range
-  uint8_t skip_updates_counter;  // the running value
+  uint16_t skip_updates;          // the config value
+  SensorSet sensors;              // all sensors of this range
+  uint16_t skip_updates_counter;  // the running value
 };
 
 class ModbusCommandItem {
@@ -374,8 +374,8 @@ class ModbusCommandItem {
                                                        const std::vector<bool> &values);
   /** Create custom modbus command
    * @param modbusdevice pointer to the device to execute the command
-   * @param values byte vector of data to be sent to the device. The compplete payload must be provided with the
-   * exception of the crc codess
+   * @param values byte vector of data to be sent to the device. The complete payload must be provided with the
+   * exception of the crc codes
    * @param handler function called when the response is received. Default is just logging a response
    * @return ModbusCommandItem with the prepared command
    */
@@ -383,6 +383,20 @@ class ModbusCommandItem {
       ModbusController *modbusdevice, const std::vector<uint8_t> &values,
       std::function<void(ModbusRegisterType register_type, uint16_t start_address, const std::vector<uint8_t> &data)>
           &&handler = nullptr);
+
+  /** Create custom modbus command
+   * @param modbusdevice pointer to the device to execute the command
+   * @param values word vector of data to be sent to the device. The complete payload must be provided with the
+   * exception of the crc codes
+   * @param handler function called when the response is received. Default is just logging a response
+   * @return ModbusCommandItem with the prepared command
+   */
+  static ModbusCommandItem create_custom_command(
+      ModbusController *modbusdevice, const std::vector<uint16_t> &values,
+      std::function<void(ModbusRegisterType register_type, uint16_t start_address, const std::vector<uint8_t> &data)>
+          &&handler = nullptr);
+
+  bool is_equal(const ModbusCommandItem &other);
 };
 
 /** Modbus controller class.
@@ -395,7 +409,6 @@ class ModbusCommandItem {
 
 class ModbusController : public PollingComponent, public modbus::ModbusDevice {
  public:
-  ModbusController(uint16_t throttle = 0) : command_throttle_(throttle){};
   void dump_config() override;
   void loop() override;
   void setup() override;
@@ -417,6 +430,12 @@ class ModbusController : public PollingComponent, public modbus::ModbusDevice {
                                   const std::vector<uint8_t> &data);
   /// called by esphome generated code to set the command_throttle period
   void set_command_throttle(uint16_t command_throttle) { this->command_throttle_ = command_throttle; }
+  /// called by esphome generated code to set the offline_skip_updates
+  void set_offline_skip_updates(uint16_t offline_skip_updates) { this->offline_skip_updates_ = offline_skip_updates; }
+  /// get the number of queued modbus commands (should be mostly empty)
+  size_t get_command_queue_length() { return command_queue_.size(); }
+  /// get if the module is offline, didn't respond the last command
+  bool get_module_offline() { return module_offline_; }
 
  protected:
   /// parse sensormap_ and create range of sequential addresses
@@ -429,13 +448,11 @@ class ModbusController : public PollingComponent, public modbus::ModbusDevice {
   void process_modbus_data_(const ModbusCommandItem *response);
   /// send the next modbus command from the send queue
   bool send_next_command_();
-  /// get the number of queued modbus commands (should be mostly empty)
-  size_t get_command_queue_length_() { return command_queue_.size(); }
   /// dump the parsed sensormap for diagnostics
   void dump_sensors_();
   /// Collection of all sensors for this component
   SensorSet sensorset_;
-  /// Continous range of modbus registers
+  /// Continuous range of modbus registers
   std::vector<RegisterRange> register_ranges_;
   /// Hold the pending requests to be sent
   std::list<std::unique_ptr<ModbusCommandItem>> command_queue_;
@@ -445,6 +462,10 @@ class ModbusController : public PollingComponent, public modbus::ModbusDevice {
   uint32_t last_command_timestamp_;
   /// min time in ms between sending modbus commands
   uint16_t command_throttle_;
+  /// if module didn't respond the last command
+  bool module_offline_;
+  /// how many updates to skip if module is offline
+  uint16_t offline_skip_updates_;
 };
 
 /** Convert vector<uint8_t> response payload to float.

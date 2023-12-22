@@ -13,6 +13,7 @@ import voluptuous as vol
 
 from esphome import core
 import esphome.codegen as cg
+from esphome.config_helpers import Extend, Remove
 from esphome.const import (
     ALLOWED_NAME_CHARS,
     CONF_AVAILABILITY,
@@ -38,12 +39,24 @@ from esphome.const import (
     CONF_UPDATE_INTERVAL,
     CONF_TYPE_ID,
     CONF_TYPE,
+    CONF_REF,
+    CONF_URL,
+    CONF_PATH,
+    CONF_USERNAME,
+    CONF_PASSWORD,
     ENTITY_CATEGORY_CONFIG,
     ENTITY_CATEGORY_DIAGNOSTIC,
     ENTITY_CATEGORY_NONE,
     KEY_CORE,
     KEY_FRAMEWORK_VERSION,
     KEY_TARGET_FRAMEWORK,
+    KEY_TARGET_PLATFORM,
+    PLATFORM_ESP32,
+    PLATFORM_ESP8266,
+    PLATFORM_RP2040,
+    TYPE_GIT,
+    TYPE_LOCAL,
+    VALID_SUBSTITUTIONS_CHARACTERS,
 )
 from esphome.core import (
     CORE,
@@ -53,21 +66,28 @@ from esphome.core import (
     TimePeriod,
     TimePeriodMicroseconds,
     TimePeriodMilliseconds,
+    TimePeriodNanoseconds,
     TimePeriodSeconds,
     TimePeriodMinutes,
 )
 from esphome.helpers import list_starts_with, add_class_to_obj
-from esphome.jsonschema import (
-    jschema_composite,
-    jschema_extractor,
-    jschema_registry,
-    jschema_typed,
+from esphome.schema_extractors import (
+    SCHEMA_EXTRACT,
+    schema_extractor_list,
+    schema_extractor,
+    schema_extractor_registry,
+    schema_extractor_typed,
 )
 from esphome.util import parse_esphome_version
 from esphome.voluptuous_schema import _Schema
 from esphome.yaml_util import make_data_base
 
 _LOGGER = logging.getLogger(__name__)
+
+# pylint: disable=consider-using-f-string
+VARIABLE_PROG = re.compile(
+    "\\$([{0}]+|\\{{[{0}]*\\}})".format(VALID_SUBSTITUTIONS_CHARACTERS)
+)
 
 # pylint: disable=invalid-name
 
@@ -92,6 +112,7 @@ ROOT_CONFIG_PATH = object()
 
 RESERVED_IDS = [
     # C++ keywords http://en.cppreference.com/w/cpp/keyword
+    "alarm",
     "alignas",
     "alignof",
     "and",
@@ -108,6 +129,7 @@ RESERVED_IDS = [
     "char16_t",
     "char32_t",
     "class",
+    "clock",
     "compl",
     "concept",
     "const",
@@ -161,6 +183,7 @@ RESERVED_IDS = [
     "struct",
     "switch",
     "template",
+    "text",
     "this",
     "thread_local",
     "throw",
@@ -201,6 +224,9 @@ RESERVED_IDS = [
     "open",
     "setup",
     "loop",
+    "uart0",
+    "uart1",
+    "uart2",
 ]
 
 
@@ -252,6 +278,14 @@ def alphanumeric(value):
 
 def valid_name(value):
     value = string_strict(value)
+
+    if CORE.vscode:
+        # If the value is a substitution, it can't be validated until the substitution
+        # is actually made.
+        sub_match = VARIABLE_PROG.search(value)
+        if sub_match:
+            return value
+
     for c in value:
         if c not in ALLOWED_NAME_CHARS:
             raise Invalid(
@@ -327,7 +361,7 @@ def boolean(value):
     )
 
 
-@jschema_composite
+@schema_extractor_list
 def ensure_list(*validators):
     """Validate this configuration option to be a list.
 
@@ -434,6 +468,14 @@ def validate_id_name(value):
         raise Invalid(
             "Dashes are not supported in IDs, please use underscores instead."
         )
+
+    if CORE.vscode:
+        # If the value is a substitution, it can't be validated until the substitution
+        # is actually made
+        sub_match = VARIABLE_PROG.match(value)
+        if sub_match:
+            return value
+
     valid_chars = f"{ascii_letters + digits}_"
     for char in value:
         if char not in valid_chars:
@@ -452,7 +494,11 @@ def validate_id_name(value):
 def use_id(type):
     """Declare that this configuration option should point to an ID with the given type."""
 
+    @schema_extractor("use_id")
     def validator(value):
+        if value == SCHEMA_EXTRACT:
+            return type
+
         check_not_templatable(value)
         if value is None:
             return core.ID(None, is_declaration=False, type=type)
@@ -475,10 +521,20 @@ def declare_id(type):
     If two IDs with the same name exist, a validation error is thrown.
     """
 
+    @schema_extractor("declare_id")
     def validator(value):
+        if value == SCHEMA_EXTRACT:
+            return type
+
         check_not_templatable(value)
         if value is None:
             return core.ID(None, is_declaration=True, type=type)
+
+        if isinstance(value, Extend):
+            raise Invalid(f"Source for extension of ID '{value.value}' was not found.")
+
+        if isinstance(value, Remove):
+            raise Invalid(f"Source for Removal of ID '{value.value}' was not found.")
 
         return core.ID(validate_id_name(value), is_declaration=True, type=type)
 
@@ -494,7 +550,11 @@ def templatable(other_validators):
     """
     schema = Schema(other_validators)
 
+    @schema_extractor("templatable")
     def validator(value):
+        if value == SCHEMA_EXTRACT:
+            return other_validators
+
         if isinstance(value, Lambda):
             return returning_lambda(value)
         if isinstance(other_validators, dict):
@@ -532,8 +592,9 @@ def only_with_framework(frameworks):
     return validator_
 
 
-only_on_esp32 = only_on("esp32")
-only_on_esp8266 = only_on("esp8266")
+only_on_esp32 = only_on(PLATFORM_ESP32)
+only_on_esp8266 = only_on(PLATFORM_ESP8266)
+only_on_rp2040 = only_on(PLATFORM_RP2040)
 only_with_arduino = only_with_framework("arduino")
 only_with_esp_idf = only_with_framework("esp-idf")
 
@@ -662,6 +723,8 @@ def time_period_str_unit(value):
         raise Invalid("Expected string for time period with unit.")
 
     unit_to_kwarg = {
+        "ns": "nanoseconds",
+        "nanoseconds": "nanoseconds",
         "us": "microseconds",
         "microseconds": "microseconds",
         "ms": "milliseconds",
@@ -683,7 +746,10 @@ def time_period_str_unit(value):
         raise Invalid(f"Expected time period with unit, got {value}")
     kwarg = unit_to_kwarg[one_of(*unit_to_kwarg)(match.group(2))]
 
-    return TimePeriod(**{kwarg: float(match.group(1))})
+    try:
+        return TimePeriod(**{kwarg: float(match.group(1))})
+    except ValueError as e:
+        raise Invalid(e) from e
 
 
 def time_period_in_milliseconds_(value):
@@ -693,10 +759,18 @@ def time_period_in_milliseconds_(value):
 
 
 def time_period_in_microseconds_(value):
+    if value.nanoseconds is not None and value.nanoseconds != 0:
+        raise Invalid("Maximum precision is microseconds")
     return TimePeriodMicroseconds(**value.as_dict())
 
 
+def time_period_in_nanoseconds_(value):
+    return TimePeriodNanoseconds(**value.as_dict())
+
+
 def time_period_in_seconds_(value):
+    if value.nanoseconds is not None and value.nanoseconds != 0:
+        raise Invalid("Maximum precision is seconds")
     if value.microseconds is not None and value.microseconds != 0:
         raise Invalid("Maximum precision is seconds")
     if value.milliseconds is not None and value.milliseconds != 0:
@@ -705,6 +779,8 @@ def time_period_in_seconds_(value):
 
 
 def time_period_in_minutes_(value):
+    if value.nanoseconds is not None and value.nanoseconds != 0:
+        raise Invalid("Maximum precision is minutes")
     if value.microseconds is not None and value.microseconds != 0:
         raise Invalid("Maximum precision is minutes")
     if value.milliseconds is not None and value.milliseconds != 0:
@@ -730,6 +806,9 @@ positive_time_period_minutes = All(positive_time_period, time_period_in_minutes_
 time_period_microseconds = All(time_period, time_period_in_microseconds_)
 positive_time_period_microseconds = All(
     positive_time_period, time_period_in_microseconds_
+)
+positive_time_period_nanoseconds = All(
+    positive_time_period, time_period_in_nanoseconds_
 )
 positive_not_null_time_period = All(
     time_period, Range(min=TimePeriod(), min_included=False)
@@ -877,6 +956,27 @@ def temperature(value):
     raise err
 
 
+def temperature_delta(value):
+    err = None
+    try:
+        return _temperature_c(value)
+    except Invalid as orig_err:
+        err = orig_err
+
+    try:
+        return _temperature_k(value)
+    except Invalid:
+        pass
+
+    try:
+        fahrenheit = _temperature_f(value)
+        return fahrenheit * (5 / 9)
+    except Invalid:
+        pass
+
+    raise err
+
+
 _color_temperature_mireds = float_with_unit("Color Temperature", r"(mireds|Mireds)")
 _color_temperature_kelvin = float_with_unit("Color Temperature", r"(K|Kelvin)")
 
@@ -959,9 +1059,9 @@ def ipv4(value):
     elif isinstance(value, IPAddress):
         return value
     else:
-        raise Invalid("IPv4 address must consist of either string or " "integer list")
+        raise Invalid("IPv4 address must consist of either string or integer list")
     if len(parts) != 4:
-        raise Invalid("IPv4 address must consist of four point-separated " "integers")
+        raise Invalid("IPv4 address must consist of four point-separated integers")
     parts_ = list(map(int, parts))
     if not all(0 <= x < 256 for x in parts_):
         raise Invalid("IPv4 address parts must be in range from 0 to 255")
@@ -970,6 +1070,8 @@ def ipv4(value):
 
 def _valid_topic(value):
     """Validate that this is a valid topic name/filter."""
+    if value is None:  # Used to disable publishing and subscribing
+        return ""
     if isinstance(value, dict):
         raise Invalid("Can't use dictionary with topic")
     value = string(value)
@@ -981,10 +1083,10 @@ def _valid_topic(value):
         raise Invalid("MQTT topic name/filter must not be empty.")
     if len(raw_value) > 65535:
         raise Invalid(
-            "MQTT topic name/filter must not be longer than " "65535 encoded bytes."
+            "MQTT topic name/filter must not be longer than 65535 encoded bytes."
         )
     if "\0" in value:
-        raise Invalid("MQTT topic name/filter must not contain null " "character.")
+        raise Invalid("MQTT topic name/filter must not contain null character.")
     return value
 
 
@@ -996,7 +1098,7 @@ def subscribe_topic(value):
             i < len(value) - 1 and value[i + 1] != "/"
         ):
             raise Invalid(
-                "Single-level wildcard must occupy an entire " "level of the filter"
+                "Single-level wildcard must occupy an entire level of the filter"
             )
 
     index = value.find("#")
@@ -1008,9 +1110,7 @@ def subscribe_topic(value):
                 "character in the topic filter."
             )
         if len(value) > 1 and value[index - 1] != "/":
-            raise Invalid(
-                "Multi-level wildcard must be after a topic " "level separator."
-            )
+            raise Invalid("Multi-level wildcard must be after a topic level separator.")
 
     return value
 
@@ -1040,9 +1140,8 @@ def mqtt_qos(value):
 
 def requires_component(comp):
     """Validate that this option can only be specified when the component `comp` is loaded."""
-    # pylint: disable=unsupported-membership-test
+
     def validator(value):
-        # pylint: disable=unsupported-membership-test
         if comp not in CORE.loaded_integrations:
             raise Invalid(f"This option requires component {comp}")
         return value
@@ -1075,23 +1174,28 @@ def possibly_negative_percentage(value):
     if isinstance(value, str):
         try:
             if value.endswith("%"):
-                has_percent_sign = False
+                has_percent_sign = True
                 value = float(value[:-1].rstrip()) / 100.0
             else:
                 value = float(value)
         except ValueError:
             # pylint: disable=raise-missing-from
             raise Invalid("invalid number")
-    if value > 1:
-        msg = "Percentage must not be higher than 100%."
-        if not has_percent_sign:
-            msg += " Please put a percent sign after the number!"
-        raise Invalid(msg)
-    if value < -1:
-        msg = "Percentage must not be smaller than -100%."
-        if not has_percent_sign:
-            msg += " Please put a percent sign after the number!"
-        raise Invalid(msg)
+    try:
+        if value > 1:
+            msg = "Percentage must not be higher than 100%."
+            if not has_percent_sign:
+                msg += " Please put a percent sign after the number!"
+            raise Invalid(msg)
+        if value < -1:
+            msg = "Percentage must not be smaller than -100%."
+            if not has_percent_sign:
+                msg += " Please put a percent sign after the number!"
+            raise Invalid(msg)
+    except TypeError:
+        raise Invalid(  # pylint: disable=raise-missing-from
+            "Expected percentage or float between -1.0 and 1.0"
+        )
     return negative_one_to_one_float(value)
 
 
@@ -1168,10 +1272,9 @@ def one_of(*values, **kwargs):
     if kwargs:
         raise ValueError
 
-    @jschema_extractor("one_of")
+    @schema_extractor("one_of")
     def validator(value):
-        # pylint: disable=comparison-with-callable
-        if value == jschema_extractor:
+        if value == SCHEMA_EXTRACT:
             return values
 
         if string_:
@@ -1211,10 +1314,9 @@ def enum(mapping, **kwargs):
     assert isinstance(mapping, dict)
     one_of_validator = one_of(*mapping, **kwargs)
 
-    @jschema_extractor("enum")
+    @schema_extractor("enum")
     def validator(value):
-        # pylint: disable=comparison-with-callable
-        if value == jschema_extractor:
+        if value == SCHEMA_EXTRACT:
             return mapping
 
         value = one_of_validator(value)
@@ -1225,7 +1327,7 @@ def enum(mapping, **kwargs):
     return validator
 
 
-LAMBDA_ENTITY_ID_PROG = re.compile(r"id\(\s*([a-zA-Z0-9_]+\.[.a-zA-Z0-9_]+)\s*\)")
+LAMBDA_ENTITY_ID_PROG = re.compile(r"\Wid\(\s*([a-zA-Z0-9_]+\.[.a-zA-Z0-9_]+)\s*\)")
 
 
 def lambda_(value):
@@ -1387,7 +1489,7 @@ def extract_keys(schema):
     return keys
 
 
-@jschema_typed
+@schema_extractor_typed
 def typed_schema(schemas, **kwargs):
     """Create a schema that has a key to distinguish between schemas"""
     key = kwargs.pop("key", CONF_TYPE)
@@ -1416,6 +1518,13 @@ class GenerateID(Optional):
         super().__init__(key, default=lambda: None)
 
 
+def _get_priority_default(*args):
+    for arg in args:
+        if arg is not vol.UNDEFINED:
+            return arg
+    return vol.UNDEFINED
+
+
 class SplitDefault(Optional):
     """Mark this key to have a split default for ESP8266/ESP32."""
 
@@ -1426,24 +1535,77 @@ class SplitDefault(Optional):
         esp32=vol.UNDEFINED,
         esp32_arduino=vol.UNDEFINED,
         esp32_idf=vol.UNDEFINED,
+        esp32_s2=vol.UNDEFINED,
+        esp32_s2_arduino=vol.UNDEFINED,
+        esp32_s2_idf=vol.UNDEFINED,
+        esp32_s3=vol.UNDEFINED,
+        esp32_s3_arduino=vol.UNDEFINED,
+        esp32_s3_idf=vol.UNDEFINED,
+        rp2040=vol.UNDEFINED,
+        bk72xx=vol.UNDEFINED,
+        rtl87xx=vol.UNDEFINED,
+        host=vol.UNDEFINED,
     ):
         super().__init__(key)
         self._esp8266_default = vol.default_factory(esp8266)
         self._esp32_arduino_default = vol.default_factory(
-            esp32_arduino if esp32 is vol.UNDEFINED else esp32
+            _get_priority_default(esp32, esp32_arduino)
         )
         self._esp32_idf_default = vol.default_factory(
-            esp32_idf if esp32 is vol.UNDEFINED else esp32
+            _get_priority_default(esp32, esp32_idf)
         )
+        self._esp32_s2_arduino_default = vol.default_factory(
+            _get_priority_default(esp32_s2, esp32, esp32_s2_arduino, esp32_arduino)
+        )
+        self._esp32_s2_idf_default = vol.default_factory(
+            _get_priority_default(esp32_s2, esp32, esp32_s2_idf, esp32_idf)
+        )
+        self._esp32_s3_arduino_default = vol.default_factory(
+            _get_priority_default(esp32_s3, esp32, esp32_s3_arduino, esp32_arduino)
+        )
+        self._esp32_s3_idf_default = vol.default_factory(
+            _get_priority_default(esp32_s3, esp32, esp32_s3_idf, esp32_idf)
+        )
+        self._rp2040_default = vol.default_factory(rp2040)
+        self._bk72xx_default = vol.default_factory(bk72xx)
+        self._rtl87xx_default = vol.default_factory(rtl87xx)
+        self._host_default = vol.default_factory(host)
 
     @property
     def default(self):
         if CORE.is_esp8266:
             return self._esp8266_default
-        if CORE.is_esp32 and CORE.using_arduino:
-            return self._esp32_arduino_default
-        if CORE.is_esp32 and CORE.using_esp_idf:
-            return self._esp32_idf_default
+        if CORE.is_esp32:
+            from esphome.components.esp32 import get_esp32_variant
+            from esphome.components.esp32.const import (
+                VARIANT_ESP32S2,
+                VARIANT_ESP32S3,
+            )
+
+            variant = get_esp32_variant()
+            if variant == VARIANT_ESP32S2:
+                if CORE.using_arduino:
+                    return self._esp32_s2_arduino_default
+                if CORE.using_esp_idf:
+                    return self._esp32_s2_idf_default
+            elif variant == VARIANT_ESP32S3:
+                if CORE.using_arduino:
+                    return self._esp32_s3_arduino_default
+                if CORE.using_esp_idf:
+                    return self._esp32_s3_idf_default
+            else:
+                if CORE.using_arduino:
+                    return self._esp32_arduino_default
+                if CORE.using_esp_idf:
+                    return self._esp32_idf_default
+        if CORE.is_rp2040:
+            return self._rp2040_default
+        if CORE.is_bk72xx:
+            return self._bk72xx_default
+        if CORE.is_rtl87xx:
+            return self._rtl87xx_default
+        if CORE.is_host:
+            return self._host_default
         raise NotImplementedError
 
     @default.setter
@@ -1462,7 +1624,6 @@ class OnlyWith(Optional):
 
     @property
     def default(self):
-        # pylint: disable=unsupported-membership-test
         if self._component in CORE.loaded_integrations:
             return self._default
         return vol.UNDEFINED
@@ -1483,6 +1644,8 @@ def _entity_base_validator(config):
         config[CONF_NAME] = id.id
         config[CONF_INTERNAL] = True
         return config
+    if config[CONF_NAME] is None:
+        config[CONF_NAME] = ""
     return config
 
 
@@ -1501,7 +1664,7 @@ def validate_registry_entry(name, registry):
     )
     ignore_keys = extract_keys(base_schema)
 
-    @jschema_registry(registry)
+    @schema_extractor_registry(registry)
     def validator(value):
         if isinstance(value, str):
             value = {value: {}}
@@ -1542,16 +1705,36 @@ def validate_registry_entry(name, registry):
     return validator
 
 
+def none(value):
+    if value in ("none", "None"):
+        return None
+    if boolean(value) is False:
+        return None
+    raise Invalid("Must be none")
+
+
+def requires_friendly_name(message):
+    def validate(value):
+        if CORE.friendly_name is None:
+            raise Invalid(message)
+        return value
+
+    return validate
+
+
 def validate_registry(name, registry):
     return ensure_list(validate_registry_entry(name, registry))
 
 
-@jschema_composite
 def maybe_simple_value(*validators, **kwargs):
     key = kwargs.pop("key", CONF_VALUE)
     validator = All(*validators)
 
+    @schema_extractor("maybe")
     def validate(value):
+        if value == SCHEMA_EXTRACT:
+            return (validator, key)
+
         if isinstance(value, dict) and key in value:
             return validator(value)
         return validator({key: value})
@@ -1559,7 +1742,7 @@ def maybe_simple_value(*validators, **kwargs):
     return validate
 
 
-_ENTITY_CATEGORIES = {
+ENTITY_CATEGORIES = {
     ENTITY_CATEGORY_NONE: cg.EntityCategory.ENTITY_CATEGORY_NONE,
     ENTITY_CATEGORY_CONFIG: cg.EntityCategory.ENTITY_CATEGORY_CONFIG,
     ENTITY_CATEGORY_DIAGNOSTIC: cg.EntityCategory.ENTITY_CATEGORY_DIAGNOSTIC,
@@ -1567,7 +1750,7 @@ _ENTITY_CATEGORIES = {
 
 
 def entity_category(value):
-    return enum(_ENTITY_CATEGORIES, lower=True)(value)
+    return enum(ENTITY_CATEGORIES, lower=True)(value)
 
 
 MQTT_COMPONENT_AVAILABILITY_SCHEMA = Schema(
@@ -1598,7 +1781,15 @@ MQTT_COMMAND_COMPONENT_SCHEMA = MQTT_COMPONENT_SCHEMA.extend(
 
 ENTITY_BASE_SCHEMA = Schema(
     {
-        Optional(CONF_NAME): string,
+        Optional(CONF_NAME): Any(
+            All(
+                none,
+                requires_friendly_name(
+                    "Name cannot be None when esphome->friendly_name is not set!"
+                ),
+            ),
+            string,
+        ),
         Optional(CONF_INTERNAL): boolean,
         Optional(CONF_DISABLED_BY_DEFAULT, default=False): boolean,
         Optional(CONF_ICON): icon,
@@ -1657,7 +1848,7 @@ def source_refresh(value: str):
     if value.lower() == "always":
         return source_refresh("0s")
     if value.lower() == "never":
-        return source_refresh("1000y")
+        return source_refresh("365250d")
     return positive_time_period_seconds(value)
 
 
@@ -1672,7 +1863,7 @@ class Version:
 
     @classmethod
     def parse(cls, value: str) -> "Version":
-        match = re.match(r"(\d+).(\d+).(\d+)", value)
+        match = re.match(r"^(\d+).(\d+).(\d+)-?\w*$", value)
         if match is None:
             raise ValueError(f"Not a valid version number {value}")
         major = int(match[1])
@@ -1686,7 +1877,7 @@ def version_number(value):
     try:
         return str(Version.parse(value))
     except ValueError as e:
-        raise Invalid("Not a version number") from e
+        raise Invalid("Not a valid version number") from e
 
 
 def platformio_version_constraint(value):
@@ -1713,6 +1904,7 @@ def require_framework_version(
     esp_idf=None,
     esp32_arduino=None,
     esp8266_arduino=None,
+    rp2040_arduino=None,
     max_version=False,
     extra_message=None,
 ):
@@ -1740,8 +1932,23 @@ def require_framework_version(
                     msg += f". {extra_message}"
                 raise Invalid(msg)
             required = esp8266_arduino
+        elif CORE.is_rp2040 and framework == "arduino":
+            if rp2040_arduino is None:
+                msg = "This feature is incompatible with RP2040"
+                if extra_message:
+                    msg += f". {extra_message}"
+                raise Invalid(msg)
+            required = rp2040_arduino
         else:
-            raise NotImplementedError
+            raise Invalid(
+                f"""
+            Internal Error: require_framework_version does not support this platform configuration
+                platform: {core_data[KEY_TARGET_PLATFORM]}
+                framework: {framework}
+
+            Please report this issue on GitHub -> https://github.com/esphome/issues/issues/new?template=bug_report.yml.
+            """
+            )
 
         if max_version:
             if core_data[KEY_FRAMEWORK_VERSION] > required:
@@ -1780,3 +1987,59 @@ def suppress_invalid():
         yield
     except vol.Invalid:
         pass
+
+
+GIT_SCHEMA = {
+    Required(CONF_URL): url,
+    Optional(CONF_REF): git_ref,
+    Optional(CONF_USERNAME): string,
+    Optional(CONF_PASSWORD): string,
+}
+LOCAL_SCHEMA = {
+    Required(CONF_PATH): directory,
+}
+
+
+def validate_source_shorthand(value):
+    if not isinstance(value, str):
+        raise Invalid("Shorthand only for strings")
+    try:
+        return SOURCE_SCHEMA({CONF_TYPE: TYPE_LOCAL, CONF_PATH: value})
+    except Invalid:
+        pass
+    # Regex for GitHub repo name with optional branch/tag
+    # Note: git allows other branch/tag names as well, but never seen them used before
+    m = re.match(
+        r"github://(?:([a-zA-Z0-9\-]+)/([a-zA-Z0-9\-\._]+)(?:@([a-zA-Z0-9\-_.\./]+))?|pr#([0-9]+))",
+        value,
+    )
+    if m is None:
+        raise Invalid(
+            "Source is not a file system path, in expected github://username/name[@branch-or-tag] or github://pr#1234 format!"
+        )
+    if m.group(4):
+        conf = {
+            CONF_TYPE: TYPE_GIT,
+            CONF_URL: "https://github.com/esphome/esphome.git",
+            CONF_REF: f"pull/{m.group(4)}/head",
+        }
+    else:
+        conf = {
+            CONF_TYPE: TYPE_GIT,
+            CONF_URL: f"https://github.com/{m.group(1)}/{m.group(2)}.git",
+        }
+        if m.group(3):
+            conf[CONF_REF] = m.group(3)
+
+    return SOURCE_SCHEMA(conf)
+
+
+SOURCE_SCHEMA = Any(
+    validate_source_shorthand,
+    typed_schema(
+        {
+            TYPE_GIT: Schema(GIT_SCHEMA),
+            TYPE_LOCAL: Schema(LOCAL_SCHEMA),
+        }
+    ),
+)

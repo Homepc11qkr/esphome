@@ -1,6 +1,6 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import i2c, sensor
+from esphome.components import i2c, sensor, sensirion_common
 from esphome.const import (
     CONF_HUMIDITY,
     CONF_ID,
@@ -12,11 +12,14 @@ from esphome.const import (
     UNIT_PERCENT,
 )
 
+CONF_HEATER_ENABLED = "heater_enabled"
+
 DEPENDENCIES = ["i2c"]
+AUTO_LOAD = ["sensirion_common"]
 
 sht3xd_ns = cg.esphome_ns.namespace("sht3xd")
 SHT3XDComponent = sht3xd_ns.class_(
-    "SHT3XDComponent", cg.PollingComponent, i2c.I2CDevice
+    "SHT3XDComponent", cg.PollingComponent, sensirion_common.SensirionI2CDevice
 )
 
 CONFIG_SCHEMA = (
@@ -35,7 +38,8 @@ CONFIG_SCHEMA = (
                 device_class=DEVICE_CLASS_HUMIDITY,
                 state_class=STATE_CLASS_MEASUREMENT,
             ),
-        }
+            cv.Optional(CONF_HEATER_ENABLED, default=False): cv.boolean,
+        },
     )
     .extend(cv.polling_component_schema("60s"))
     .extend(i2c.i2c_device_schema(0x44))
@@ -46,6 +50,8 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     await i2c.register_i2c_device(var, config)
+
+    cg.add(var.set_heater_enabled(config[CONF_HEATER_ENABLED]))
 
     if CONF_TEMPERATURE in config:
         sens = await sensor.new_sensor(config[CONF_TEMPERATURE])

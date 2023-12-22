@@ -57,11 +57,20 @@ class ComponentIterator {
 #ifdef USE_NUMBER
   virtual bool on_number(number::Number *number) = 0;
 #endif
+#ifdef USE_TEXT
+  virtual bool on_text(text::Text *text) = 0;
+#endif
 #ifdef USE_SELECT
   virtual bool on_select(select::Select *select) = 0;
 #endif
 #ifdef USE_LOCK
   virtual bool on_lock(lock::Lock *a_lock) = 0;
+#endif
+#ifdef USE_MEDIA_PLAYER
+  virtual bool on_media_player(media_player::MediaPlayer *media_player);
+#endif
+#ifdef USE_ALARM_CONTROL_PANEL
+  virtual bool on_alarm_control_panel(alarm_control_panel::AlarmControlPanel *a_alarm_control_panel) = 0;
 #endif
   virtual bool on_end();
 
@@ -105,11 +114,20 @@ class ComponentIterator {
 #ifdef USE_NUMBER
     NUMBER,
 #endif
+#ifdef USE_TEXT
+    TEXT,
+#endif
 #ifdef USE_SELECT
     SELECT,
 #endif
 #ifdef USE_LOCK
     LOCK,
+#endif
+#ifdef USE_MEDIA_PLAYER
+    MEDIA_PLAYER,
+#endif
+#ifdef USE_ALARM_CONTROL_PANEL
+    ALARM_CONTROL_PANEL,
 #endif
     MAX,
   } state_{IteratorState::NONE};

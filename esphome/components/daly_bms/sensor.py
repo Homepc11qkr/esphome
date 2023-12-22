@@ -98,6 +98,8 @@ CELL_VOLTAGE_SCHEMA = sensor.sensor_schema(
     unit_of_measurement=UNIT_VOLT,
     device_class=DEVICE_CLASS_VOLTAGE,
     state_class=STATE_CLASS_MEASUREMENT,
+    icon=ICON_FLASH,
+    accuracy_decimals=3,
 )
 
 CONFIG_SCHEMA = cv.All(
@@ -216,9 +218,8 @@ CONFIG_SCHEMA = cv.All(
 
 
 async def setup_conf(config, key, hub):
-    if key in config:
-        conf = config[key]
-        sens = await sensor.new_sensor(conf)
+    if sensor_config := config.get(key):
+        sens = await sensor.new_sensor(sensor_config)
         cg.add(getattr(hub, f"set_{key}_sensor")(sens))
 
 

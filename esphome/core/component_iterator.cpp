@@ -202,6 +202,21 @@ void ComponentIterator::advance() {
       }
       break;
 #endif
+#ifdef USE_TEXT
+    case IteratorState::TEXT:
+      if (this->at_ >= App.get_texts().size()) {
+        advance_platform = true;
+      } else {
+        auto *text = App.get_texts()[this->at_];
+        if (text->is_internal() && !this->include_internal_) {
+          success = true;
+          break;
+        } else {
+          success = this->on_text(text);
+        }
+      }
+      break;
+#endif
 #ifdef USE_SELECT
     case IteratorState::SELECT:
       if (this->at_ >= App.get_selects().size()) {
@@ -232,6 +247,36 @@ void ComponentIterator::advance() {
       }
       break;
 #endif
+#ifdef USE_MEDIA_PLAYER
+    case IteratorState::MEDIA_PLAYER:
+      if (this->at_ >= App.get_media_players().size()) {
+        advance_platform = true;
+      } else {
+        auto *media_player = App.get_media_players()[this->at_];
+        if (media_player->is_internal() && !this->include_internal_) {
+          success = true;
+          break;
+        } else {
+          success = this->on_media_player(media_player);
+        }
+      }
+      break;
+#endif
+#ifdef USE_ALARM_CONTROL_PANEL
+    case IteratorState::ALARM_CONTROL_PANEL:
+      if (this->at_ >= App.get_alarm_control_panels().size()) {
+        advance_platform = true;
+      } else {
+        auto *a_alarm_control_panel = App.get_alarm_control_panels()[this->at_];
+        if (a_alarm_control_panel->is_internal() && !this->include_internal_) {
+          success = true;
+          break;
+        } else {
+          success = this->on_alarm_control_panel(a_alarm_control_panel);
+        }
+      }
+      break;
+#endif
     case IteratorState::MAX:
       if (this->on_end()) {
         this->state_ = IteratorState::NONE;
@@ -253,5 +298,8 @@ bool ComponentIterator::on_service(api::UserServiceDescriptor *service) { return
 #endif
 #ifdef USE_ESP32_CAMERA
 bool ComponentIterator::on_camera(esp32_camera::ESP32Camera *camera) { return true; }
+#endif
+#ifdef USE_MEDIA_PLAYER
+bool ComponentIterator::on_media_player(media_player::MediaPlayer *media_player) { return true; }
 #endif
 }  // namespace esphome

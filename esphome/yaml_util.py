@@ -10,7 +10,7 @@ import yaml
 import yaml.constructor
 
 from esphome import core
-from esphome.config_helpers import read_config_file
+from esphome.config_helpers import read_config_file, Extend, Remove
 from esphome.core import (
     EsphomeError,
     IPAddress,
@@ -18,9 +18,18 @@ from esphome.core import (
     MACAddress,
     TimePeriod,
     DocumentRange,
+    CORE,
 )
 from esphome.helpers import add_class_to_obj
 from esphome.util import OrderedDict, filter_yaml_files
+
+try:
+    from yaml import CSafeLoader as FastestAvailableSafeLoader
+except ImportError:
+    from yaml import (  # type: ignore[assignment]
+        SafeLoader as FastestAvailableSafeLoader,
+    )
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -88,7 +97,7 @@ def _add_data_ref(fn):
     return wrapped
 
 
-class ESPHomeLoader(yaml.SafeLoader):  # pylint: disable=too-many-ancestors
+class ESPHomeLoader(FastestAvailableSafeLoader):
     """Loader class that keeps track of line numbers."""
 
     @_add_data_ref
@@ -240,7 +249,18 @@ class ESPHomeLoader(yaml.SafeLoader):  # pylint: disable=too-many-ancestors
 
     @_add_data_ref
     def construct_secret(self, node):
-        secrets = _load_yaml_internal(self._rel_path(SECRET_YAML))
+        try:
+            secrets = _load_yaml_internal(self._rel_path(SECRET_YAML))
+        except EsphomeError as e:
+            if self.name == CORE.config_path:
+                raise e
+            try:
+                main_config_dir = os.path.dirname(CORE.config_path)
+                main_secret_yml = os.path.join(main_config_dir, SECRET_YAML)
+                secrets = _load_yaml_internal(main_secret_yml)
+            except EsphomeError as er:
+                raise EsphomeError(f"{e}\n{er}") from er
+
         if node.value not in secrets:
             raise yaml.MarkedYAMLError(
                 f"Secret '{node.value}' not defined", node.start_mark
@@ -251,7 +271,49 @@ class ESPHomeLoader(yaml.SafeLoader):  # pylint: disable=too-many-ancestors
 
     @_add_data_ref
     def construct_include(self, node):
-        return _load_yaml_internal(self._rel_path(node.value))
+        def extract_file_vars(node):
+            fields = self.construct_yaml_map(node)
+            file = fields.get("file")
+            if file is None:
+                raise yaml.MarkedYAMLError("Must include 'file'", node.start_mark)
+            vars = fields.get("vars")
+            if vars:
+                vars = {k: str(v) for k, v in vars.items()}
+            return file, vars
+
+        def substitute_vars(config, vars):
+            from esphome.const import CONF_SUBSTITUTIONS
+            from esphome.components import substitutions
+
+            org_subs = None
+            result = config
+            if not isinstance(config, dict):
+                # when the included yaml contains a list or a scalar
+                # wrap it into an OrderedDict because do_substitution_pass expects it
+                result = OrderedDict([("yaml", config)])
+            elif CONF_SUBSTITUTIONS in result:
+                org_subs = result.pop(CONF_SUBSTITUTIONS)
+
+            result[CONF_SUBSTITUTIONS] = vars
+            # Ignore missing vars that refer to the top level substitutions
+            substitutions.do_substitution_pass(result, None, ignore_missing=True)
+            result.pop(CONF_SUBSTITUTIONS)
+
+            if not isinstance(config, dict):
+                result = result["yaml"]  # unwrap the result
+            elif org_subs:
+                result[CONF_SUBSTITUTIONS] = org_subs
+            return result
+
+        if isinstance(node, yaml.nodes.MappingNode):
+            file, vars = extract_file_vars(node)
+        else:
+            file, vars = node.value, None
+
+        result = _load_yaml_internal(self._rel_path(file))
+        if vars:
+            result = substitute_vars(result, vars)
+        return result
 
     @_add_data_ref
     def construct_include_dir_list(self, node):
@@ -296,6 +358,14 @@ class ESPHomeLoader(yaml.SafeLoader):  # pylint: disable=too-many-ancestors
         obj = self.construct_scalar(node)
         return add_class_to_obj(obj, ESPForceValue)
 
+    @_add_data_ref
+    def construct_extend(self, node):
+        return Extend(str(node.value))
+
+    @_add_data_ref
+    def construct_remove(self, node):
+        return Remove(str(node.value))
+
 
 ESPHomeLoader.add_constructor("tag:yaml.org,2002:int", ESPHomeLoader.construct_yaml_int)
 ESPHomeLoader.add_constructor(
@@ -327,6 +397,8 @@ ESPHomeLoader.add_constructor(
 )
 ESPHomeLoader.add_constructor("!lambda", ESPHomeLoader.construct_lambda)
 ESPHomeLoader.add_constructor("!force", ESPHomeLoader.construct_force)
+ESPHomeLoader.add_constructor("!extend", ESPHomeLoader.construct_extend)
+ESPHomeLoader.add_constructor("!remove", ESPHomeLoader.construct_remove)
 
 
 def load_yaml(fname, clear_secrets=True):
@@ -348,8 +420,11 @@ def _load_yaml_internal(fname):
         loader.dispose()
 
 
-def dump(dict_):
+def dump(dict_, show_secrets=False):
     """Dump YAML to a string and remove null."""
+    if show_secrets:
+        _SECRET_VALUES.clear()
+        _SECRET_CACHE.clear()
     return yaml.dump(
         dict_, default_flow_style=False, allow_unicode=True, Dumper=ESPHomeDumper
     )
@@ -377,7 +452,7 @@ def is_secret(value):
         return None
 
 
-class ESPHomeDumper(yaml.SafeDumper):  # pylint: disable=too-many-ancestors
+class ESPHomeDumper(yaml.SafeDumper):
     def represent_mapping(self, tag, mapping, flow_style=None):
         value = []
         node = yaml.MappingNode(tag, value, flow_style=flow_style)

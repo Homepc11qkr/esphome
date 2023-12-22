@@ -36,14 +36,8 @@ void SGP30Component::setup() {
   ESP_LOGCONFIG(TAG, "Setting up SGP30...");
 
   // Serial Number identification
-  if (!this->write_command_(SGP30_CMD_GET_SERIAL_ID)) {
-    this->error_code_ = COMMUNICATION_FAILED;
-    this->mark_failed();
-    return;
-  }
   uint16_t raw_serial_number[3];
-
-  if (!this->read_data_(raw_serial_number, 3)) {
+  if (!this->get_register(SGP30_CMD_GET_SERIAL_ID, raw_serial_number, 3)) {
     this->mark_failed();
     return;
   }
@@ -52,16 +46,12 @@ void SGP30Component::setup() {
   ESP_LOGD(TAG, "Serial Number: %" PRIu64, this->serial_number_);
 
   // Featureset identification for future use
-  if (!this->write_command_(SGP30_CMD_GET_FEATURESET)) {
+  uint16_t raw_featureset;
+  if (!this->get_register(SGP30_CMD_GET_FEATURESET, raw_featureset)) {
     this->mark_failed();
     return;
   }
-  uint16_t raw_featureset[1];
-  if (!this->read_data_(raw_featureset, 1)) {
-    this->mark_failed();
-    return;
-  }
-  this->featureset_ = raw_featureset[0];
+  this->featureset_ = raw_featureset;
   if (uint16_t(this->featureset_ >> 12) != 0x0) {
     if (uint16_t(this->featureset_ >> 12) == 0x1) {
       // ID matching a different sensor: SGPC3
@@ -76,16 +66,17 @@ void SGP30Component::setup() {
   ESP_LOGD(TAG, "Product version: 0x%0X", uint16_t(this->featureset_ & 0x1FF));
 
   // Sensor initialization
-  if (!this->write_command_(SGP30_CMD_IAQ_INIT)) {
+  if (!this->write_command(SGP30_CMD_IAQ_INIT)) {
     ESP_LOGE(TAG, "Sensor sgp30_iaq_init failed.");
     this->error_code_ = MEASUREMENT_INIT_FAILED;
     this->mark_failed();
     return;
   }
 
-  // Hash with compilation time
+  // Hash with compilation time and serial number
   // This ensures the baseline storage is cleared after OTA
-  uint32_t hash = fnv1_hash(App.get_compilation_time());
+  // Serial numbers are unique to each sensor, so mulitple sensors can be used without conflict
+  uint32_t hash = fnv1_hash(App.get_compilation_time() + std::to_string(this->serial_number_));
   this->pref_ = global_preferences->make_preference<SGP30Baselines>(hash, true);
 
   if (this->pref_.load(&this->baselines_storage_)) {
@@ -119,14 +110,14 @@ bool SGP30Component::is_sensor_baseline_reliable_() {
 
 void SGP30Component::read_iaq_baseline_() {
   if (this->is_sensor_baseline_reliable_()) {
-    if (!this->write_command_(SGP30_CMD_GET_IAQ_BASELINE)) {
+    if (!this->write_command(SGP30_CMD_GET_IAQ_BASELINE)) {
       ESP_LOGD(TAG, "Error getting baseline");
       this->status_set_warning();
       return;
     }
     this->set_timeout(50, [this]() {
       uint16_t raw_data[2];
-      if (!this->read_data_(raw_data, 2)) {
+      if (!this->read_data(raw_data, 2)) {
         this->status_set_warning();
         return;
       }
@@ -191,9 +182,18 @@ void SGP30Component::send_env_data_() {
     ESP_LOGD(TAG, "External compensation data received: Temperature %0.2f°C", temperature);
   }
 
-  float absolute_humidity =
-      216.7f * (((humidity / 100) * 6.112f * std::exp((17.62f * temperature) / (243.12f + temperature))) /
-                (273.15f + temperature));
+  float absolute_humidity;
+  if (temperature < 0) {
+    absolute_humidity =
+        216.67f *
+        ((humidity * 0.061121f * std::exp((23.036f - temperature / 333.7f) * (temperature / (279.82f + temperature)))) /
+         (273.15f + temperature));
+  } else {
+    absolute_humidity =
+        216.67f *
+        ((humidity * 0.061121f * std::exp((18.678f - temperature / 234.5f) * (temperature / (257.14f + temperature)))) /
+         (273.15f + temperature));
+  }
   uint8_t humidity_full = uint8_t(std::floor(absolute_humidity));
   uint8_t humidity_dec = uint8_t(std::floor((absolute_humidity - std::floor(absolute_humidity)) * 256));
   ESP_LOGD(TAG, "Calculated Absolute humidity: %0.3f g/m³ (0x%04X)", absolute_humidity,
@@ -256,7 +256,7 @@ void SGP30Component::dump_config() {
     } else {
       ESP_LOGCONFIG(TAG, "  Baseline: No baseline configured");
     }
-    ESP_LOGCONFIG(TAG, "  Warm up time: %us", this->required_warm_up_time_);
+    ESP_LOGCONFIG(TAG, "  Warm up time: %" PRIu32 "s", this->required_warm_up_time_);
   }
   LOG_UPDATE_INTERVAL(this);
   LOG_SENSOR("  ", "eCO2 sensor", this->eco2_sensor_);
@@ -274,14 +274,14 @@ void SGP30Component::dump_config() {
 }
 
 void SGP30Component::update() {
-  if (!this->write_command_(SGP30_CMD_MEASURE_IAQ)) {
+  if (!this->write_command(SGP30_CMD_MEASURE_IAQ)) {
     this->status_set_warning();
     return;
   }
   this->seconds_since_last_store_ += this->update_interval_ / 1000;
   this->set_timeout(50, [this]() {
     uint16_t raw_data[2];
-    if (!this->read_data_(raw_data, 2)) {
+    if (!this->read_data(raw_data, 2)) {
       this->status_set_warning();
       return;
     }
@@ -303,57 +303,6 @@ void SGP30Component::update() {
     this->send_env_data_();
     this->read_iaq_baseline_();
   });
-}
-
-bool SGP30Component::write_command_(uint16_t command) {
-  // Warning ugly, trick the I2Ccomponent base by setting register to the first 8 bit.
-  return this->write_byte(command >> 8, command & 0xFF);
-}
-
-uint8_t SGP30Component::sht_crc_(uint8_t data1, uint8_t data2) {
-  uint8_t bit;
-  uint8_t crc = 0xFF;
-
-  crc ^= data1;
-  for (bit = 8; bit > 0; --bit) {
-    if (crc & 0x80) {
-      crc = (crc << 1) ^ 0x131;
-    } else {
-      crc = (crc << 1);
-    }
-  }
-
-  crc ^= data2;
-  for (bit = 8; bit > 0; --bit) {
-    if (crc & 0x80) {
-      crc = (crc << 1) ^ 0x131;
-    } else {
-      crc = (crc << 1);
-    }
-  }
-
-  return crc;
-}
-
-bool SGP30Component::read_data_(uint16_t *data, uint8_t len) {
-  const uint8_t num_bytes = len * 3;
-  std::vector<uint8_t> buf(num_bytes);
-
-  if (this->read(buf.data(), num_bytes) != i2c::ERROR_OK) {
-    return false;
-  }
-
-  for (uint8_t i = 0; i < len; i++) {
-    const uint8_t j = 3 * i;
-    uint8_t crc = sht_crc_(buf[j], buf[j + 1]);
-    if (crc != buf[j + 2]) {
-      ESP_LOGE(TAG, "CRC8 Checksum invalid! 0x%02X != 0x%02X", buf[j + 2], crc);
-      return false;
-    }
-    data[i] = (buf[j] << 8) | buf[j + 1];
-  }
-
-  return true;
 }
 
 }  // namespace sgp30

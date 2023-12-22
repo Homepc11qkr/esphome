@@ -7,6 +7,13 @@
 namespace esphome {
 namespace pmsx003 {
 
+// known command bytes
+#define PMS_CMD_AUTO_MANUAL 0xE1  // data=0: perform measurement manually, data=1: perform measurement automatically
+#define PMS_CMD_TRIG_MANUAL 0xE2  // trigger a manual measurement
+#define PMS_CMD_ON_STANDBY 0xE4   // data=0: go to standby mode, data=1: go to normal mode
+
+static const uint16_t PMS_STABILISING_MS = 30000;  // time taken for the sensor to become stable after power on
+
 enum PMSX003Type {
   PMSX003_TYPE_X003 = 0,
   PMSX003_TYPE_5003T,
@@ -14,17 +21,22 @@ enum PMSX003Type {
   PMSX003_TYPE_5003S,
 };
 
-class PMSX003Component : public PollingComponent, public uart::UARTDevice {
+enum PMSX003State {
+  PMSX003_STATE_IDLE = 0,
+  PMSX003_STATE_STABILISING,
+  PMSX003_STATE_WAITING,
+};
+
+class PMSX003Component : public uart::UARTDevice, public Component {
  public:
   PMSX003Component() = default;
   void loop() override;
   float get_setup_priority() const override;
-  
-  void setup() override;
-  void update() override;
   void dump_config() override;
 
   void set_type(PMSX003Type type) { type_ = type; }
+
+  void set_update_interval(uint32_t val) { update_interval_ = val; };
 
   void set_pm_1_0_std_sensor(sensor::Sensor *pm_1_0_std_sensor);
   void set_pm_2_5_std_sensor(sensor::Sensor *pm_2_5_std_sensor);
@@ -48,12 +60,17 @@ class PMSX003Component : public PollingComponent, public uart::UARTDevice {
  protected:
   optional<bool> check_byte_();
   void parse_data_();
+  void send_command_(uint8_t cmd, uint16_t data);
   uint16_t get_16_bit_uint_(uint8_t start_index);
-  void write_command(uint8_t cmd, uint16_t data);
 
   uint8_t data_[64];
   uint8_t data_index_{0};
+  uint8_t initialised_{0};
+  uint32_t fan_on_time_{0};
+  uint32_t last_update_{0};
   uint32_t last_transmission_{0};
+  uint32_t update_interval_{0};
+  PMSX003State state_{PMSX003_STATE_IDLE};
   PMSX003Type type_;
 
   // "Standard Particle"

@@ -31,11 +31,20 @@
 #ifdef USE_NUMBER
 #include "esphome/components/number/number.h"
 #endif
+#ifdef USE_TEXT
+#include "esphome/components/text/text.h"
+#endif
 #ifdef USE_SELECT
 #include "esphome/components/select/select.h"
 #endif
 #ifdef USE_LOCK
 #include "esphome/components/lock/lock.h"
+#endif
+#ifdef USE_MEDIA_PLAYER
+#include "esphome/components/media_player/media_player.h"
+#endif
+#ifdef USE_ALARM_CONTROL_PANEL
+#include "esphome/components/alarm_control_panel/alarm_control_panel.h"
 #endif
 
 namespace esphome {
@@ -70,11 +79,20 @@ class Controller {
 #ifdef USE_NUMBER
   virtual void on_number_update(number::Number *obj, float state){};
 #endif
+#ifdef USE_TEXT
+  virtual void on_text_update(text::Text *obj, const std::string &state){};
+#endif
 #ifdef USE_SELECT
-  virtual void on_select_update(select::Select *obj, const std::string &state){};
+  virtual void on_select_update(select::Select *obj, const std::string &state, size_t index){};
 #endif
 #ifdef USE_LOCK
   virtual void on_lock_update(lock::Lock *obj){};
+#endif
+#ifdef USE_MEDIA_PLAYER
+  virtual void on_media_player_update(media_player::MediaPlayer *obj){};
+#endif
+#ifdef USE_ALARM_CONTROL_PANEL
+  virtual void on_alarm_control_panel_update(alarm_control_panel::AlarmControlPanel *obj){};
 #endif
 };
 

@@ -2,7 +2,6 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import select
 from esphome.const import CONF_ADDRESS, CONF_ID, CONF_LAMBDA, CONF_OPTIMISTIC
-from esphome.jsonschema import jschema_composite
 
 from .. import (
     SENSOR_VALUE_TYPE,
@@ -30,7 +29,6 @@ ModbusSelect = modbus_controller_ns.class_(
 )
 
 
-@jschema_composite
 def ensure_option_map():
     def validator(value):
         cv.check_not_templatable(value)
@@ -66,9 +64,10 @@ INTEGER_SENSOR_VALUE_TYPE = {
 }
 
 CONFIG_SCHEMA = cv.All(
-    select.SELECT_SCHEMA.extend(cv.COMPONENT_SCHEMA).extend(
+    select.select_schema(ModbusSelect)
+    .extend(cv.COMPONENT_SCHEMA)
+    .extend(
         {
-            cv.GenerateID(): cv.declare_id(ModbusSelect),
             cv.GenerateID(CONF_MODBUS_CONTROLLER_ID): cv.use_id(ModbusController),
             cv.Required(CONF_ADDRESS): cv.positive_int,
             cv.Optional(CONF_VALUE_TYPE, default="U_WORD"): cv.enum(
